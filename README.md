@@ -1,4 +1,4 @@
-"# NotesLibraries" 
+# NotesLibraries for LotusScript 
 
 We have collected a lot of Libraries for LotusScript (Notes/Domino) that did not store in Github.com.
 
