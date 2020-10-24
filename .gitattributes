@@ -1,3 +1,5 @@
 # .gitattributes file which reclassifies `.js` files as Java:
 *.js linguist-language=Java
-*.lss linguist-language=RealBasic
+*.lss linguist-language=Visual Basic .NET
+# *.lss linguist-language=RealBasic or PureBasic or VBA
+
