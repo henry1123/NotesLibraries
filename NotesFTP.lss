@@ -1,0 +1,267 @@
+Option Public
+Option Explicit
+
+'+++++++++++++++++++++++++++++++++++++++
+' NotesFTP Script Library (Notes.net sample)
+' Copyright (c) 2000 Paul D. Ray
+' Last Update: May 29, 2000
+'+++++++++++++++++++++++++++++++++++++++
+
+' private Win32 constants used by the Class
+Private Const MAX_PATH = 260
+Private Const INTERNET_FLAG_RELOAD = &H80000000
+Private Const FILE_ATTRIBUTE_NORMAL = &H80
+Private Const INTERNET_OPEN_TYPE_PRECONFIG = 0
+Private Const INTERNET_INVALID_PORT_NUMBER = 0
+Private Const INTERNET_SERVICE_FTP = 1
+
+' public constants that can be used as arguments to the methods in the Class
+Const FTP_TRANSFER_TYPE_BINARY = &H2
+Const FTP_TRANSFER_TYPE_ASCII = &H1
+Const INTERNET_FLAG_PASSIVE = &H8000000
+
+' Win32 API struct for extracting file info
+Private Type WIN32_FIND_DATA
+	dwFileAttributes As Long
+	ftCreationTime As Currency
+	ftLastAccessTime As Currency
+	ftLastWriteTime As Currency
+	nFileSizeHigh As Long
+	nFileSizeLow As Long
+	dwReserved0 As Long
+	dwReserved1 As Long
+	cFileName As String * MAX_PATH
+	cAlternate As String * 14
+End Type
+
+' function declarations for Win32 Internet API
+Declare Private Function FtpFindFirstFile Lib "wininet.dll" Alias "FtpFindFirstFileA" (Byval hFtpSession As Long, Byval lpszSearchFile As String, lpFindFileData As WIN32_FIND_DATA, Byval dwFlags As Long, Byval dwContent As Long) As Long
+Declare Private Function FtpSetCurrentDirectory Lib "wininet.dll" Alias "FtpSetCurrentDirectoryA" (Byval hFtpSession As Long, Byval lpszDirectory As String) As Integer
+Declare Private Function FtpGetCurrentDirectory Lib "wininet.dll" Alias "FtpGetCurrentDirectoryA" (Byval hFtpSession As Long, Byval lpszCurrentDirectory As String, lpdwCurrentDirectory As Long) As Integer
+Declare Private Function FtpPutFile Lib "wininet.dll" Alias "FtpPutFileA" (Byval hFtpSession As Long, Byval lpszLocalFile As String, Byval lpszRemoteFile As String, Byval dwFlags As Long, Byval dwContext As Long) As Integer
+Declare Private Function FtpGetFile Lib "wininet.dll" Alias "FtpGetFileA" (Byval hFtpSession As Long, Byval lpszRemoteFile As String, Byval lpszNewFile As String, Byval fFailIfExists As Integer, Byval dwFlagsAndAttributes As Long, Byval dwFlags As Long, Byval dwContext As Long) As Integer
+Declare Private Function FtpDeleteFile Lib "wininet.dll" Alias "FtpDeleteFileA" (Byval hFtpSession As Long, Byval lpszFileName As String) As Integer
+Declare Private Function FtpCreateDirectory Lib "wininet.dll" Alias "FtpCreateDirectoryA" (Byval hConnect As Long, Byval lpszDirectory As String) As Integer
+Declare Private Function FtpRenameFile Lib "wininet.dll" Alias "FtpRenameFileA" (Byval hConnect As Long, Byval lpszExisting As String, Byval lpszNew As String) As Integer
+Declare Private Function FtpRemoveDirectory Lib "wininet.dll" Alias "FtpRemoveDirectoryA" (Byval hConnect As Long, Byval lpszDirectory As String) As Integer
+Declare Private Function apiInternetCloseHandle Lib "wininet.dll" Alias "InternetCloseHandle" (Byval hInet As Long) As Long
+Declare Private Function InternetOpen Lib "wininet.dll" Alias "InternetOpenA" (Byval sAgent As String, Byval lAccessType As Long, Byval sProxyName As String, Byval sProxyBypass As String, Byval lFlags As Long) As Long
+Declare Private Function InternetConnect Lib "wininet.dll" Alias "InternetConnectA" (Byval hInternetSession As Long, Byval sServerName As String, Byval nServerPort As Integer, Byval sUsername As String, Byval sPassword As String, Byval lService As Long, Byval lFlags As Long, Byval lContext As Long) As Long
+Declare Private Function InternetFindNextFile Lib "wininet.dll" Alias "InternetFindNextFileA" (Byval hFind As Long, lpvFindData As WIN32_FIND_DATA) As Long
+
+' custom constants for errors raised by methods in the Class
+Const NOTESFTP_INIT_FAILED = 300
+Const NOTESFTP_DELETE_FAILED = 301
+Const NOTESFTP_CONNECT_FAILED = 302
+Const NOTESFTP_GETDIR_FAILED = 303
+Const NOTESFTP_SETDIR_FAILED = 304
+Const NOTESFTP_CREATEDIR_FAILED = 305
+Const NOTESFTP_DELETEDIR_FAILED = 306
+Const NOTESFTP_PUTFILE_FAILED = 307
+Const NOTESFTP_GETFILE_FAILED = 308
+Const NOTESFTP_RENAMEFILE_FAILED = 309
+Const NOTESFTP_DELETEFILE_FAILED = 310
+
+' our custom Class for instantiating NotesFTPSession objects
+Class NotesFTPSession
+	
+	' private member variables used internally by the methods and properties within the Class
+	Private hLib As Long	
+	Private hConnection As Long
+	
+	' constructor for NotesFTPSession Class...called when object is instantiated with "New" statement
+	Sub New 
+		' initialize member vars
+		Me.hLib=0
+		Me.hConnection = 0	
+		
+		' initialize data structures for subsequent calls to Win32 Internet functions		
+		Me.hLib = InternetOpen("Lotus Notes", INTERNET_OPEN_TYPE_PRECONFIG, Chr(0), Chr(0), 0)
+		
+		' raise error if we can't get a handle to the Win32 Internet API
+		If Me.hLib = 0 Then
+			Error NOTESFTP_INIT_FAILED, "Could not get handle to WININET.DLL."
+		End If
+		
+	End Sub
+	
+	' releases handle to Win32 Internet functions and sets object to Nothing...called by "Delete" statement
+	Sub Delete		
+		
+		' log off FTP server if Me.Disconnect has not been called yet
+		Me.Disconnect
+		
+		' raise an error if we can't free our handle to the Win32 Internet API
+		If apiInternetCloseHandle(Me.hLib) = False Then
+			Error NOTESFTP_DELETE_FAILED, "Could not close handle to WININET.DLL."
+		End If
+		
+	End Sub
+	
+	' opens socket and logs into FTP host
+	Sub Connect(server$, user$, password$, flags&) 		
+		
+		' close any connections we may already have open		
+		If Me.hConnection <> 0 Then
+			apiInternetCloseHandle Me.hConnection
+		End If
+		
+		' log into the FTP host and get a handle to the connection
+		Me.hConnection = InternetConnect(Me.hLib, server$, INTERNET_INVALID_PORT_NUMBER, user$, password$, INTERNET_SERVICE_FTP, flags&, 0)
+		
+		' raise error if we cannot login to the host
+		If Me.hConnection = 0 Then
+			Error NOTESFTP_CONNECT_FAILED, "Could not connect to host " & server$ & "."
+		End If
+		
+	End Sub
+	
+	' releases connection and logs off FTP host	
+	Sub Disconnect	
+		
+		' if we have a connection open, release it
+		If Me.hConnection <> 0 Then
+			apiInternetCloseHandle Me.hConnection
+		End If
+		
+		' we have no more open connections
+		Me.hConnection = 0
+		
+	End Sub
+	
+	' determines if application is logged into FTP server
+	Property Get IsConnected		
+		
+		' simple check to see if we created a connection...returns True if we have, False if not
+		If Me.hConnection <> 0 Then
+			IsConnected = True
+		Else
+			IsConnected = False			
+		End If	
+		
+	End Property
+	
+	' determines current directory on FTP server	
+	Property Get CurrentDirectory	
+		Dim sDir As String
+		
+		' initialize string before passing it to function
+		sDir = String(1024, Chr$(0))
+		
+		' raise error if we cannot get the current directory, otherwise, return the directory name as a string
+		If FtpGetCurrentDirectory(Me.hConnection, sDir, 1024) = False Then
+			Error NOTESFTP_GETDIR_FAILED, "Could not get current directory on host."
+		Else			
+			CurrentDirectory=sDir
+		End If
+		
+	End Property
+	
+	' changes current directory on FTP host
+	Sub ChangeDirectory(sDir$)	
+		
+		' raise error if directory could not be changed
+		If FtpSetCurrentDirectory(Me.hConnection, sDir$) = False Then
+			Error NOTESFTP_SETDIR_FAILED, "Could not set current directory on host."
+		End If
+		
+	End Sub
+	
+	' creates new directory on FTP host
+	Sub CreateDirectory(sDir$)		
+		
+		' raise an error if we cannot create a new directory
+		If FtpCreateDirectory(Me.hConnection, sDir$) = False Then
+			Error NOTESFTP_CREATEDIR_FAILED, "Could not create directory on host."
+		End If
+		
+	End Sub
+	
+	' removes a directory from an FTP host
+	Sub RemoveDirectory(sDir$)			
+		
+		' raise an error if we cannot remove the directory from the host
+		If FtpRemoveDirectory(Me.hConnection, sDir$) = False Then
+			Error NOTESFTP_DELETEDIR_FAILED, "Could not delete directory from host."
+		End If
+		
+	End Sub
+	
+	' uploads a file to an FTP host	
+	Sub PutFile(localFile$, remoteFile$, transferType&)			
+		
+		' raise an error if we cannot submit the file to the host
+		If FtpPutFile(Me.hConnection, localFile$, remoteFile$, transferType&, 0) = False Then
+			Error NOTESFTP_PUTFILE_FAILED, "Could not upload file to host."			
+		End If
+		
+	End Sub
+	
+	' downloads a file from an FTP host
+	Sub GetFile(remoteFile$, localFile$, transferType&)				
+		
+		' raise an error if file cannot be downloaded from host
+		If FtpGetFile(Me.hConnection, remoteFile$, localFile$, False, FILE_ATTRIBUTE_NORMAL, transferType& Or INTERNET_FLAG_RELOAD, 0) = False Then
+			Error NOTESFTP_GETFILE_FAILED, "Could not download file from host."	
+		End If
+		
+	End Sub
+	
+	
+	' renames a file on an FTP host		
+	Sub RenameFile(existingFile$, newFile$)		
+		
+		' raise an error if file cannot be renamed on host
+		If FtpRenameFile(Me.hConnection, existingFile$, newFile$) = False Then
+			Error NOTESFTP_RENAMEFILE_FAILED, "Could not rename file on host."	
+		End If
+		
+	End Sub
+	
+	' deletes a file from an FTP host
+	Sub DeleteFile(remoteFile$)				
+		
+		' raise an error if file cannot be delete from server
+		If FtpDeleteFile(Me.hConnection, remoteFile$) = False Then
+			Error NOTESFTP_DELETEFILE_FAILED, "Could not delete file from host."	
+		End If
+		
+	End Sub
+	
+	' returns a list of files and directories in current directory on FTP host
+	Function Dir(dirSpec$) As Variant				
+		Dim retArray() As String
+		Dim hFind&
+		Dim pData As WIN32_FIND_DATA
+		Dim nCt%
+		
+		' get handle to first file
+		hFind& = FtpFindFirstFile(Me.hConnection, dirSpec$, pData, 0, 0)
+		
+		' continue on if we found a file
+		If hFind& <> 0 Then
+			
+			' initialize array and plug in first element
+			nCt%=0
+			Redim retArray(nCt%)
+			retArray(nCt%) = Left(pData.cFileName, Instr(1, pData.cFileName, String(1, 0)) - 1)
+			
+			' find all files in the current directory and place their names into an array
+			Do While InternetFindNextFile(hFind&, pData) <> 0 
+				nCt%=nCt%+1
+				Redim Preserve retArray(nCt%)			
+				retArray(nCt%) = Left(pData.cFileName, Instr(1, pData.cFileName, String(1, 0)) - 1)
+				pData.cFileName = String$(MAX_PATH, 0)		
+			Loop
+			
+			' close the handle we have on the first file
+			apiInternetCloseHandle hFind&
+			
+			' return the results
+			Me.Dir = retArray
+			
+		End If
+		
+	End Function
+	
+End Class
